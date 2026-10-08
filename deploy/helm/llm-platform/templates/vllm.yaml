@@ -1,0 +1,84 @@
+{{- if .Values.vllm.enabled }}
+{{- $fullname := include "llm-platform.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-vllm
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "llm-platform.selector" (dict "root" . "component" "vllm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-platform.selector" (dict "root" . "component" "vllm") | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: vllm
+          image: "{{ .Values.vllm.image.repository }}:{{ .Values.vllm.image.tag }}"
+          imagePullPolicy: {{ .Values.vllm.image.pullPolicy }}
+          args:
+            - --model={{ .Values.vllm.model }}
+            - --served-model-name={{ .Values.vllm.servedModelName }}
+            - --max-model-len={{ .Values.vllm.maxModelLen }}
+            - --port=8000
+            {{- if .Values.vllm.enablePrefixCaching }}
+            - --enable-prefix-caching
+            {{- end }}
+            {{- range .Values.vllm.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: VLLM_CPU_KVCACHE_SPACE
+              value: {{ .Values.vllm.kvCacheSpaceGiB | quote }}
+            - name: HF_HOME
+              value: /cache/huggingface
+            {{- if .Values.vllm.hfTokenSecret }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.vllm.hfTokenSecret }}, key: HF_TOKEN}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8000}
+          startupProbe:          # first start downloads the model
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.vllm.resources | nindent 12 }}
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Values.vllm.cacheVolume.sizeLimit }}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-vllm
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm
+spec:
+  selector:
+    {{- include "llm-platform.selector" (dict "root" . "component" "vllm") | nindent 4 }}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+{{- end }}

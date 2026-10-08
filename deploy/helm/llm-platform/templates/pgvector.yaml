@@ -1,0 +1,72 @@
+{{- if .Values.pgvector.enabled }}
+{{- $fullname := include "llm-platform.fullname" . -}}
+{{- if not .Values.pgvector.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "llm-platform.pgSecret" . }}
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace (include "llm-platform.pgSecret" .) }}
+  POSTGRES_PASSWORD: {{ if $existing }}{{ index $existing.data "POSTGRES_PASSWORD" }}{{ else }}{{ randAlphaNum 24 | b64enc }}{{ end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-pgvector
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgvector
+spec:
+  serviceName: {{ $fullname }}-pgvector
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "llm-platform.selector" (dict "root" . "component" "pgvector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-platform.selector" (dict "root" . "component" "pgvector") | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: "{{ .Values.pgvector.image.repository }}:{{ .Values.pgvector.image.tag }}"
+          env:
+            - {name: POSTGRES_DB, value: {{ .Values.pgvector.database | quote }}}
+            - {name: POSTGRES_USER, value: {{ .Values.pgvector.user | quote }}}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "llm-platform.pgSecret" . }}, key: POSTGRES_PASSWORD}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.pgvector.user | quote }}]
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.pgvector.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-pgvector
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pgvector
+spec:
+  selector:
+    {{- include "llm-platform.selector" (dict "root" . "component" "pgvector") | nindent 4 }}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
+{{- end }}

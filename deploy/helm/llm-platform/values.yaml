@@ -1,0 +1,103 @@
+# Defaults target a laptop kind cluster on CPU. See values-kind.yaml for the overrides Terraform uses.
+
+gateway:
+  image:
+    repository: llm-platform-gateway
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  service:
+    type: ClusterIP
+    nodePort: null           # set with type NodePort (kind maps 30080 to the host)
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  cache:
+    exact: true
+    ttlSeconds: 3600
+    semantic: false          # opt in; a wrong semantic hit returns a confidently wrong answer
+    semanticThreshold: 0.92
+  # Extra OpenAI-compatible backends (hosted APIs) the router may pick by cost/tier.
+  # apiKey values are read from the Secret named in existingSecret (key = backend name).
+  extraBackends: []
+  #  - name: hosted-large
+  #    model: gpt-4.1
+  #    baseUrl: https://api.openai.com/v1
+  #    tier: 3
+  #    priceInPer1k: 0.002
+  #    priceOutPer1k: 0.008
+  #    maxContext: 128000
+  existingSecret: ""
+  registry:
+    persistence: false       # true = PVC for the prompt registry SQLite file
+    size: 1Gi
+
+vllm:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai-cpu
+    tag: v0.31.0
+    pullPolicy: IfNotPresent
+  model: Qwen/Qwen2.5-0.5B-Instruct
+  servedModelName: qwen2.5-0.5b
+  maxModelLen: 4096
+  enablePrefixCaching: true  # server-side KV prefix caching, complements the gateway caches
+  kvCacheSpaceGiB: 2         # VLLM_CPU_KVCACHE_SPACE
+  extraArgs: []
+  # Amortised cost the router uses for the self-hosted model (USD per 1k tokens).
+  priceInPer1k: 0.00002
+  priceOutPer1k: 0.00004
+  tier: 1
+  resources:
+    requests: {cpu: "2", memory: 6Gi}
+    limits: {cpu: "4", memory: 8Gi}
+  cacheVolume:
+    sizeLimit: 10Gi
+  hfTokenSecret: ""          # Secret with key HF_TOKEN, only needed for gated models
+
+# Alternative serving path: a KServe InferenceService (needs KServe installed in the cluster).
+kserve:
+  enabled: false
+  runtime: kserve-huggingfaceserver
+  storageUri: hf://Qwen/Qwen2.5-0.5B-Instruct
+  resources:
+    requests: {cpu: "2", memory: 6Gi}
+    limits: {cpu: "4", memory: 8Gi}
+
+vectorStore:
+  kind: qdrant               # qdrant | pgvector | memory
+
+qdrant:
+  enabled: true
+  image:
+    repository: qdrant/qdrant
+    tag: v1.19.2
+  storage: 2Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+pgvector:
+  enabled: false
+  image:
+    repository: pgvector/pgvector
+    tag: pg17
+  storage: 2Gi
+  database: llmplat
+  user: llmplat
+  existingSecret: ""         # Secret with key POSTGRES_PASSWORD; generated if empty
+
+monitoring:
+  serviceMonitor:
+    enabled: false           # needs the Prometheus Operator CRDs (kube-prometheus-stack)
+    interval: 15s
+    labels:
+      release: monitoring
+  grafanaDashboard:
+    enabled: true            # ConfigMap picked up by the Grafana sidecar (label grafana_dashboard=1)
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001

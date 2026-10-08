@@ -1,0 +1,71 @@
+{{- $fullname := include "llm-platform.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+data:
+  platform.yaml: |
+    backends:
+    {{- if .Values.vllm.enabled }}
+      - name: local-vllm
+        kind: openai
+        model: {{ .Values.vllm.servedModelName | quote }}
+        base_url: http://{{ $fullname }}-vllm:8000/v1
+        tier: {{ .Values.vllm.tier }}
+        price_in_per_1k: {{ .Values.vllm.priceInPer1k }}
+        price_out_per_1k: {{ .Values.vllm.priceOutPer1k }}
+        max_context: {{ .Values.vllm.maxModelLen }}
+        timeout_s: 120
+    {{- end }}
+    {{- if .Values.kserve.enabled }}
+      - name: local-kserve
+        kind: openai
+        model: {{ $fullname }}-kserve
+        base_url: http://{{ $fullname }}-kserve-predictor/openai/v1
+        tier: 1
+        price_in_per_1k: {{ .Values.vllm.priceInPer1k }}
+        price_out_per_1k: {{ .Values.vllm.priceOutPer1k }}
+        max_context: {{ .Values.vllm.maxModelLen }}
+        timeout_s: 120
+    {{- end }}
+    {{- range .Values.gateway.extraBackends }}
+      - name: {{ .name }}
+        kind: openai
+        model: {{ .model | quote }}
+        base_url: {{ .baseUrl }}
+        api_key: ${BACKEND_KEY_{{ .name | upper | replace "-" "_" }}}
+        tier: {{ .tier }}
+        price_in_per_1k: {{ .priceInPer1k }}
+        price_out_per_1k: {{ .priceOutPer1k }}
+        max_context: {{ .maxContext }}
+    {{- end }}
+    cache:
+      exact: {{ .Values.gateway.cache.exact }}
+      ttl_s: {{ .Values.gateway.cache.ttlSeconds }}
+      semantic: {{ .Values.gateway.cache.semantic }}
+      semantic_threshold: {{ .Values.gateway.cache.semanticThreshold }}
+    rag:
+      store: {{ .Values.vectorStore.kind }}
+      dim: 384
+      options:
+      {{- if eq .Values.vectorStore.kind "qdrant" }}
+        url: http://{{ $fullname }}-qdrant:6333
+        collection: docs
+      {{- else if eq .Values.vectorStore.kind "pgvector" }}
+        dsn: postgresql://{{ .Values.pgvector.user }}:${PGPASSWORD}@{{ $fullname }}-pgvector:5432/{{ .Values.pgvector.database }}
+      {{- else }}
+        {}
+      {{- end }}
+    prompts:
+      path: /data/prompts.sqlite
+      seed: /etc/llm-platform/prompts.yaml
+  prompts.yaml: |
+    rag-answer:
+      - version: 1.0.0
+        template: |
+          You are a support assistant. Answer using only the context below.
+          Context:
+          {context}
+        labels: [prod]

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: llm-platform
+description: vLLM model server, FastAPI LLM gateway (cost routing, prompt caching, prompt registry), Qdrant/pgvector RAG and Grafana dashboard.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [llm, vllm, kserve, qdrant, pgvector, gateway]

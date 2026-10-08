@@ -1,0 +1,7 @@
+rag-answer:
+  - version: 1.0.0
+    template: |
+      You are a support assistant. Answer using only the context below.
+      Context:
+      {context}
+    labels: [prod]

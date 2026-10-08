@@ -1,0 +1,55 @@
+{{- if .Values.qdrant.enabled }}
+{{- $fullname := include "llm-platform.fullname" . -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-qdrant
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  serviceName: {{ $fullname }}-qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "llm-platform.selector" (dict "root" . "component" "qdrant") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-platform.selector" (dict "root" . "component" "qdrant") | nindent 8 }}
+    spec:
+      containers:
+        - name: qdrant
+          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          ports:
+            - {name: http, containerPort: 6333}
+            - {name: grpc, containerPort: 6334}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          resources:
+            {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - {name: storage, mountPath: /qdrant/storage}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-qdrant
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  selector:
+    {{- include "llm-platform.selector" (dict "root" . "component" "qdrant") | nindent 4 }}
+  ports:
+    - {name: http, port: 6333, targetPort: http}
+    - {name: grpc, port: 6334, targetPort: grpc}
+{{- end }}

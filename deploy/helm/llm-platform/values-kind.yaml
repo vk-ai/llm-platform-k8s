@@ -1,0 +1,19 @@
+# Overrides used by deploy/terraform for a local kind cluster.
+gateway:
+  image:
+    repository: llm-platform-gateway
+    tag: dev
+    pullPolicy: Never        # loaded with `kind load docker-image`
+  service:
+    type: NodePort
+    nodePort: 30080
+  cache:
+    semantic: true
+    semanticThreshold: 0.92
+monitoring:
+  serviceMonitor:
+    enabled: true
+vllm:
+  resources:
+    requests: {cpu: "2", memory: 4Gi}
+    limits: {cpu: "4", memory: 6Gi}

@@ -1,0 +1,6 @@
+Gateway:  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "llm-platform.fullname" . }}-gateway 8080:80
+Then:     curl -s localhost:8080/v1/chat/completions -H 'content-type: application/json' \
+            -d '{"model":"auto","messages":[{"role":"user","content":"hello"}]}'
+{{- if .Values.vllm.enabled }}
+vLLM downloads {{ .Values.vllm.model }} on first start; watch: kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "llm-platform.fullname" . }}-vllm -f
+{{- end }}

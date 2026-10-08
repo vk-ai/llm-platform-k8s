@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+build/
+dist/
+*.sqlite
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate*
+deploy/terraform/.terraform.lock.hcl
+deploy/helm/llm-platform/charts/
+.terraform/
+*.db
+.terraform/
+*.db

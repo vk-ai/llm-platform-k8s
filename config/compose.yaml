@@ -1,0 +1,11 @@
+# Used by docker-compose.yml. Two mock model servers stand in for vLLM unless you
+# start the `vllm` profile and switch local-small's base_url to http://vllm:8000/v1.
+backends:
+  - {name: local-small, kind: openai, model: small-model, base_url: "http://mock-small:8000/v1", tier: 1, price_in_per_1k: 0.00002, price_out_per_1k: 0.00004, max_context: 4096}
+  - {name: hosted-large, kind: openai, model: large-model, base_url: "http://mock-large:8000/v1", tier: 3, price_in_per_1k: 0.0025, price_out_per_1k: 0.01, max_context: 128000}
+cache: {exact: true, ttl_s: 3600, semantic: true, semantic_threshold: 0.92}
+rag:
+  store: qdrant
+  dim: 384
+  options: {url: "http://qdrant:6333", collection: docs}
+prompts: {path: /data/prompts.sqlite, seed: config/prompts.yaml}

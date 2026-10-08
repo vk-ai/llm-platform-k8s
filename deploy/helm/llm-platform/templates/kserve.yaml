@@ -1,0 +1,22 @@
+{{- if .Values.kserve.enabled }}
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: {{ include "llm-platform.fullname" . }}-kserve
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: huggingface
+      runtime: {{ .Values.kserve.runtime }}
+      storageUri: {{ .Values.kserve.storageUri }}
+      args:
+        - --model_name={{ include "llm-platform.fullname" . }}-kserve
+        - --max_model_len={{ .Values.vllm.maxModelLen }}
+      resources:
+        {{- toYaml .Values.kserve.resources | nindent 8 }}
+{{- end }}

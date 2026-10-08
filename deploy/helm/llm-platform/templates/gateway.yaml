@@ -1,0 +1,112 @@
+{{- $fullname := include "llm-platform.fullname" . -}}
+{{- if .Values.gateway.registry.persistence }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-registry
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.gateway.registry.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "llm-platform.selector" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-platform.selector" (dict "root" . "component" "gateway") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.gateway.port | quote }}
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          args: ["serve", "--port", "{{ .Values.gateway.port }}"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.port }}
+          env:
+            - name: LLMPLAT_CONFIG
+              value: /etc/llm-platform/platform.yaml
+            {{- if .Values.pgvector.enabled }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "llm-platform.pgSecret" . }}
+                  key: POSTGRES_PASSWORD
+            {{- end }}
+            {{- range .Values.gateway.extraBackends }}
+            - name: BACKEND_KEY_{{ .name | upper | replace "-" "_" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "gateway.existingSecret is required with extraBackends" $.Values.gateway.existingSecret }}
+                  key: {{ .name }}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/llm-platform, readOnly: true}
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-gateway
+        - name: data
+          {{- if .Values.gateway.registry.persistence }}
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-registry
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "llm-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    {{- include "llm-platform.selector" (dict "root" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      {{- if and (eq .Values.gateway.service.type "NodePort") .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}

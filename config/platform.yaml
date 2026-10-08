@@ -1,0 +1,37 @@
+# Local config: three mock backends so everything runs offline.
+# In Kubernetes the Helm chart renders its own copy (deploy/helm/llm-platform/templates/configmap.yaml)
+# pointing at the vLLM service.
+backends:
+  - name: local-small          # self-hosted small model (vLLM on CPU in the chart); amortised node cost
+    kind: mock
+    model: Qwen2.5-0.5B-Instruct
+    tier: 1
+    price_in_per_1k: 0.00002
+    price_out_per_1k: 0.00004
+    max_context: 4096
+  - name: hosted-medium
+    kind: mock
+    model: medium-model
+    tier: 2
+    price_in_per_1k: 0.00015
+    price_out_per_1k: 0.0006
+    max_context: 32768
+  - name: hosted-large
+    kind: mock
+    model: large-model
+    tier: 3
+    price_in_per_1k: 0.0025
+    price_out_per_1k: 0.01
+    max_context: 128000
+cache:
+  exact: true
+  ttl_s: 3600
+  semantic: true
+  semantic_threshold: 0.9
+rag:
+  store: memory              # memory | qdrant | pgvector  (env LLMPLAT_VECTOR_STORE overrides)
+  dim: 384
+  options: {}
+prompts:
+  path: ":memory:"
+  seed: config/prompts.yaml
