@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from .backends import make_backend
@@ -27,6 +28,7 @@ class ChatResult:
     tried: list[str]
     reason: str
     similarity: float | None = None
+    usage_source: str = "upstream"
 
 
 class Gateway:
@@ -82,6 +84,49 @@ class Gateway:
             if self.semantic is not None:
                 self.semantic.put(scope, messages, entry)
         return ChatResult(c.text, c.model, r.backend, "miss" if cacheable else "off", r.cost_usd, c.prompt_tokens, c.completion_tokens, r.tried, r.reason)
+
+    async def chat_stream(self, messages: list[dict], model: str = "auto", max_tokens: int = 256, temperature: float = 0.0,
+                          quality: str | int | None = None, max_cost_usd: float | None = None,
+                          cache: str = "auto") -> AsyncIterator[tuple[str, object]]:
+        """Streaming version of ``chat``: same cache, routing and metrics.
+
+        Yields ("delta", str)... then ("done", ChatResult). A cache hit is sent as one delta.
+        The cache is filled only after the stream finished cleanly.
+        """
+        min_tier = self.resolve_tier(quality)
+        pinned = None if model in ("auto", "", None) else model
+        scope = f"pinned:{pinned}" if pinned else f"auto:tier>={min_tier}"
+        cacheable = cache != "off" and (temperature == 0 or self.settings.cache_nondeterministic or cache == "force")
+        key = request_key(scope, messages, max_tokens, temperature)
+        hit, sim, kind = None, None, None
+        if cacheable and self.exact is not None:
+            hit = self.exact.get(key)
+            self.metrics.cache.labels(cache="exact", result="hit" if hit else "miss").inc()
+            kind = "exact" if hit else None
+        if hit is None and cacheable and self.semantic is not None:
+            hit, sim = self.semantic.lookup(scope, messages)
+            self.metrics.cache.labels(cache="semantic", result="hit" if hit else "miss").inc()
+            kind = "semantic" if hit else None
+        if hit is not None:
+            self.metrics.saved_cost.labels(cache=kind).inc(hit.cost_usd)
+            yield ("delta", hit.text)
+            yield ("done", ChatResult(hit.text, hit.model, hit.backend, kind, 0.0, hit.prompt_tokens, hit.completion_tokens, [], "cache", sim))
+            return
+        r = None
+        async for ev, val in self.router.stream(messages, max_tokens, temperature, min_tier, max_cost_usd, pinned):
+            if ev == "delta":
+                yield ("delta", val)
+            else:
+                r = val
+        c = r.completion
+        if cacheable:
+            entry = CachedAnswer(c.text, r.backend, c.model, c.prompt_tokens, c.completion_tokens, r.cost_usd, time.monotonic())
+            if self.exact is not None:
+                self.exact.put(key, entry)
+            if self.semantic is not None:
+                self.semantic.put(scope, messages, entry)
+        yield ("done", ChatResult(c.text, c.model, r.backend, "miss" if cacheable else "off", r.cost_usd, c.prompt_tokens,
+                                  c.completion_tokens, r.tried, r.reason, usage_source=c.usage_source))
 
     async def rag_query(self, question: str, k: int = 4, label: str | None = "prod", version: str | None = None, **chat_kw) -> dict:
         hits = self.rag.retrieve(question, k)

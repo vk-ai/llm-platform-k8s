@@ -158,6 +158,25 @@ The same run checked `tests/test_live_backend.py` (skipped unless
 `LLMPLAT_REAL_BASE_URL` is set) and saved vLLM's metric names to
 `tests/fixtures/vllm-0.31.0-cpu-metric-names.txt` for the dashboard test.
 
+## Streaming with usage and cost
+
+`stream: true` returns OpenAI-style SSE. The gateway always asks the upstream for
+`stream_options.include_usage`, so cost is based on the tokens the backend reports
+(falling back to an estimate, marked `usage_source: "estimated"`). If the client sends
+`"stream_options": {"include_usage": true}`, the last chunk before `[DONE]` has
+`choices: []`, `usage`, and an `x_llm` block with `backend`, `cache` and `cost_usd`.
+
+- Failover happens only before the first token. A backend that dies mid-stream ends
+  the stream with an `error` event and no `[DONE]`, and the partial answer is not cached.
+- Cache hits are streamed as one chunk with `cost_usd: 0`.
+- Metrics use `route="chat_stream"`.
+
+Why: [openclaw#90495](https://github.com/openclaw/openclaw/issues/90495) (gateway drops
+include_usage), [cloudflare/ai#470](https://github.com/cloudflare/ai/issues/470) (no
+token/cost tracking for streams), [litellm#39069](https://github.com/BerriAI/litellm/pull/39069)
+(cost on the final streamed chunk). The test data in `tests/fixtures/include_usage_stream.*`
+is shared with vk-ai/openai-compat-inference-stub.
+
 ## Tests
 
 ```
@@ -186,6 +205,7 @@ CI (`.github/workflows/ci.yml`) runs, all offline except for image and chart dow
 - The gateway, cost router, failover, circuit breaker, both caches, prompt registry, RAG service and metrics.
 - Qdrant through `qdrant-client` in local mode, and pgvector on a real Postgres 17 + pgvector 0.8.0 (locally and in CI).
 - One real completion through the gateway from Qwen2.5-0.5B-Instruct on the vLLM 0.31.0 CPU wheel, run outside Kubernetes.
+- Streaming (`stream: true`) through the same cache, router, failover and metrics, with `stream_options.include_usage` adding a final chunk that carries `usage` and `x_llm.cost_usd`.
 - Helm chart rendering, `helm lint`, `kubeconform`, `terraform validate`.
 
 **Stubbed, simulated or not verified:**
@@ -193,7 +213,8 @@ CI (`.github/workflows/ci.yml`) runs, all offline except for image and chart dow
 - **The backends in the demo and tests are mocks.** They return canned text. "hosted-medium" and "hosted-large" are placeholders with made-up prices, not real providers, and the `local-small` price is a notional amortised cost.
 - **The default embedder is lexical, not semantic** (feature hashing + stopwords + stemming). It is deterministic and dependency-free, which is why tests use it, but the RAG scores and semantic-cache hits above reflect word overlap. `OpenAIEmbedder` exists but is only unit-tested.
 - **Token counts are estimated** (about 4 characters per token) for routing decisions; billing uses the backend's `usage` field when present.
-- **No streaming** (`stream: true` returns 400), no auth, no rate limiting, no multi-replica cache (each gateway pod has its own in-process caches).
+- **Streaming is tested against the stub and mocks, not vLLM.** The SSE path was checked live against vk-ai/openai-compat-inference-stub over HTTP and replays that stub's recorded transcript in tests; I have not streamed from the real vLLM server. Mock backends report estimated usage (`usage_source: "estimated"`). There is no failover once the first token has been sent.
+- No auth, no rate limiting, no multi-replica cache (each gateway pod has its own in-process caches).
 - **The Grafana dashboard was never opened in Grafana.** It is generated JSON whose queries are checked against the metric names.
 
 ## Layout

@@ -77,11 +77,6 @@ def test_failover_and_all_down(client):
     assert 'llm_gateway_requests_total{route="chat",status="upstream_error"} 1.0' in client.get("/metrics").text
 
 
-def test_stream_rejected(client):
-    r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "x"}], "stream": True})
-    assert r.status_code == 400
-
-
 def test_rag_and_prompt_rollout(client):
     assert client.post("/v1/rag/ingest", json={"documents": DOCS}).json()["chunks"] == 3
     r = client.post("/v1/rag/query", json={"question": "how long do refunds take", "k": 2}).json()
