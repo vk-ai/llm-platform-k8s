@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 import httpx
@@ -42,6 +44,11 @@ class Completion:
     completion_tokens: int
     model: str
     latency_s: float
+    usage_source: str = "upstream"   # "upstream" (backend reported it) or "estimated" (gateway guessed)
+
+
+# Stream events: ("delta", str) zero or more times, then exactly one ("done", Completion).
+StreamEvent = tuple[str, object]
 
 
 class OpenAICompatBackend:
@@ -76,6 +83,58 @@ class OpenAICompatBackend:
             latency_s=time.perf_counter() - t0,
         )
 
+    async def stream(self, messages: list[dict], max_tokens: int, temperature: float) -> AsyncIterator[StreamEvent]:
+        """Stream from an OpenAI-compatible server, asking it for a final usage chunk.
+
+        Errors before the first byte raise BackendError (so the router can fail over).
+        If the upstream ignores include_usage, tokens are estimated and marked so.
+        """
+        t0 = time.perf_counter()
+        payload = {"model": self.spec.model, "messages": messages, "max_tokens": max_tokens,
+                   "temperature": temperature, "stream": True, "stream_options": {"include_usage": True}}
+        try:
+            async with self.client.stream("POST", "/chat/completions", json=payload) as r:
+                if r.status_code == 429 or r.status_code >= 500:
+                    raise BackendError(f"{self.spec.name}: HTTP {r.status_code}", retryable=True, status=r.status_code)
+                if r.status_code >= 400:
+                    body = (await r.aread()).decode(errors="replace")
+                    raise BackendError(f"{self.spec.name}: HTTP {r.status_code} {body[:200]}", retryable=False, status=r.status_code)
+                parts: list[str] = []
+                usage: dict = {}
+                model = self.spec.model
+                done = False
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        done = True
+                        break
+                    chunk = json.loads(data)
+                    model = chunk.get("model", model)
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for ch in chunk.get("choices") or []:
+                        piece = (ch.get("delta") or {}).get("content")
+                        if piece:
+                            parts.append(piece)
+                            yield ("delta", piece)
+                if not done:
+                    raise BackendError(f"{self.spec.name}: stream ended without [DONE]", retryable=False)
+        except httpx.TimeoutException as exc:
+            raise BackendError(f"{self.spec.name}: timeout", retryable=True) from exc
+        except httpx.TransportError as exc:
+            raise BackendError(f"{self.spec.name}: {exc.__class__.__name__}", retryable=True) from exc
+        text = "".join(parts)
+        yield ("done", Completion(
+            text=text,
+            prompt_tokens=int(usage.get("prompt_tokens") or messages_tokens(messages)),
+            completion_tokens=int(usage.get("completion_tokens") or estimate_tokens(text)),
+            model=model,
+            latency_s=time.perf_counter() - t0,
+            usage_source="upstream" if usage else "estimated",
+        ))
+
     async def aclose(self) -> None:
         await self.client.aclose()
 
@@ -92,6 +151,7 @@ class MockBackend:
         self.fail_next = 0
         self.always_fail = False
         self.calls = 0
+        self.fail_mid_stream: int | None = None
 
     async def complete(self, messages: list[dict], max_tokens: int, temperature: float) -> Completion:
         self.calls += 1
@@ -104,6 +164,17 @@ class MockBackend:
         words = str(user).split()
         text = f"[{self.spec.name}] " + " ".join(words[: min(len(words), max(8, max_tokens // 4))])
         return Completion(text, messages_tokens(messages), estimate_tokens(text), self.spec.model, self.delay_s)
+
+    async def stream(self, messages: list[dict], max_tokens: int, temperature: float) -> AsyncIterator[StreamEvent]:
+        """Word-by-word stream of the same text ``complete`` returns. ``fail_mid_stream`` breaks after N words."""
+        c = await self.complete(messages, max_tokens, temperature)
+        words = c.text.split(" ")
+        for i, w in enumerate(words):
+            if self.fail_mid_stream is not None and i >= self.fail_mid_stream:
+                raise BackendError(f"{self.spec.name}: stream dropped (injected)", retryable=False)
+            yield ("delta", w if i == 0 else " " + w)
+        c.usage_source = "estimated"
+        yield ("done", c)
 
     async def aclose(self) -> None:
         return None

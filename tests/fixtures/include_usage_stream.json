@@ -1,0 +1,17 @@
+{
+  "_about": "Shared OpenAI stream_options.include_usage contract. Copied verbatim into vk-ai/llm-platform-k8s tests so the stub (server) and gateway (proxy) are checked against the same rules. Sources: vllm-project/vllm#7299, ggml-org/llama.cpp#15443, openclaw/openclaw#90495.",
+  "request": {
+    "model": "stub-model",
+    "stream": true,
+    "stream_options": {"include_usage": true},
+    "messages": [{"role": "user", "content": "count my tokens please"}]
+  },
+  "rules": {
+    "every_content_chunk_has_usage_key_null": true,
+    "usage_chunk_is_last_before_done": true,
+    "usage_chunk_choices": [],
+    "usage_fields": ["prompt_tokens", "completion_tokens", "total_tokens"],
+    "total_equals_prompt_plus_completion": true,
+    "without_option_no_usage_key": true
+  }
+}

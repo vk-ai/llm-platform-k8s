@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 from .backends import BackendError, BackendSpec, Completion
@@ -116,4 +117,45 @@ class CostRouter:
             reason = "pinned" if pinned else ("cheapest" if i == 0 else "failover")
             self.metrics.observe_completion(name, c, cost, reason)
             return RouteResult(c, name, cost, est, tried, reason)
+        raise AllBackendsFailed(errors)
+
+    async def stream(self, messages: list[dict], max_tokens: int = 256, temperature: float = 0.0, min_tier: int = 1,
+                     max_cost_usd: float | None = None, pinned: str | None = None) -> AsyncIterator[tuple[str, object]]:
+        """Streaming twin of ``complete``.
+
+        Failover only happens before the first token reaches the client: once a
+        delta has been yielded, a backend error is re-raised (we can't un-send text).
+        Yields ("delta", str)... then ("done", RouteResult).
+        """
+        order, rejected = self.plan(messages, max_tokens, min_tier, max_cost_usd, pinned)
+        if not order:
+            raise NoEligibleBackend("no backend satisfies tier/context/budget/health", rejected)
+        errors, tried = [], []
+        for i, (est, name) in enumerate(order):
+            tried.append(name)
+            started = False
+            try:
+                async for kind, val in self.backends[name].stream(messages, max_tokens, temperature):  # type: ignore[attr-defined]
+                    if kind == "delta":
+                        started = True
+                        yield ("delta", val)
+                    else:
+                        c = val
+            except BackendError as exc:
+                self.breakers[name].record_failure(self.clock())
+                self.metrics.backend_errors.labels(backend=name, retryable=str(exc.retryable).lower()).inc()
+                if started:
+                    raise
+                errors.append(str(exc))
+                if not exc.retryable:
+                    break
+                if i + 1 < len(order):
+                    self.metrics.failovers.labels(from_backend=name, to_backend=order[i + 1][1]).inc()
+                continue
+            self.breakers[name].record_success()
+            cost = self.spec(name).estimate_cost(c.prompt_tokens, c.completion_tokens)
+            reason = "pinned" if pinned else ("cheapest" if i == 0 else "failover")
+            self.metrics.observe_completion(name, c, cost, reason)
+            yield ("done", RouteResult(c, name, cost, est, tried, reason))
+            return
         raise AllBackendsFailed(errors)
